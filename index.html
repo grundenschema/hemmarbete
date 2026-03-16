@@ -241,6 +241,10 @@ input[type=text] {
 }
 .questions-block { margin-top:18px; }
 .questions-header { display:flex; justify-content:space-between; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:12px; }
+.qactions{margin-top:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.qresult{font-size:13px;font-weight:700;color:var(--muted);}
+.qresult.ok{color:var(--green);}
+.qresult.warn{color:var(--red);}
 .story-side-head { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:12px; }
 .story-grid { display:grid; gap:10px; }
 .story-item {
@@ -270,6 +274,8 @@ input[type=text] {
 </style>
 </head>
 <body>
+<audio id="soundSuccess" preload="auto"><source src="level_up.mp3" type="audio/mpeg"><source src="level up.mp3" type="audio/mpeg"></audio>
+<audio id="soundFail" preload="auto"><source src="level_down.mp3" type="audio/mpeg"><source src="level down.mp3" type="audio/mpeg"></audio>
 <div class="app">
   <div class="frame" id="frame">
     <div class="hero">
@@ -354,7 +360,6 @@ input[type=text] {
           <div class="questions-block">
             <div class="questions-header">
               <h2 style="margin:0">Frågor</h2>
-              <button class="btn" onclick="checkAnswers()">Rätta</button>
             </div>
             <div id="questions"></div>
             <div id="result" class="result">Svara på frågorna</div>
@@ -455,9 +460,18 @@ progressText=document.getElementById("progressText"),
 clearOverlay=document.getElementById("clearOverlay"),
 overlayIcon=document.getElementById("overlayIcon"),
 overlaySub=document.getElementById("overlaySub"),
-missionBox=document.getElementById("missionBox");
+missionBox=document.getElementById("missionBox"),
+successSound=document.getElementById("soundSuccess"),
+failSound=document.getElementById("soundFail");
 
 let state={levelIndex:0,wordIndex:0,correctCount:0,wrongAttemptsOnWord:0,currentWord:levels[0][0],maxAttempts:3,locked:false};
+
+function playAudio(el){
+  if(!el) return;
+  try{ el.pause(); el.currentTime=0; const p=el.play(); if(p&&typeof p.catch==="function") p.catch(()=>{}); }catch{}
+}
+function playSuccess(){ playAudio(successSound); }
+function playFail(){ playAudio(failSound); }
 
 function normalizeText(t){return (t||"").trim().toLowerCase();}
 function getResults(){try{return JSON.parse(localStorage.getItem(STORAGE_KEY))||[];}catch{return[];}}
@@ -590,6 +604,7 @@ function handleCorrect(){
   statusMini.textContent="Rätt";
   setResult("Rätt","ok");
   flashFeedback("ok");
+  playSuccess();
   state.locked=true;
   answerInput.disabled=true;
   updateUI();
@@ -604,9 +619,11 @@ function handleWrong(){
     statusMini.textContent="Försök igen";
     setResult("Fel · "+left+" liv kvar","warn");
     flashFeedback("bad");
+    playFail();
     answerInput.select();
   }else{
     flashFeedback("bad");
+    playFail();
     failLevel();
   }
 }
@@ -750,18 +767,18 @@ function renderCurrentText(){
   readingText.textContent = currentData.text || "";
   readingStatus.textContent = `${currentData.questions.length} frågor`;
   readingResult.className = "result";
-  readingResult.textContent = "Svara på frågorna";
+  readingResult.textContent = "Rätta en fråga i taget";
 
   let html = "";
   currentData.questions.forEach((item, i) => {
     const shuffledAnswers = shuffle(item.answers.map((text, idx) => ({ text, correct: idx === item.correct })));
-    html += `<div class="qcard"><div class="qtitle">${i + 1}. ${item.q}</div>`;
+    html += `<div class="qcard" id="qcard${i}"><div class="qtitle">${i + 1}. ${item.q}</div>`;
     shuffledAnswers.forEach((answer, aIndex) => {
       html += `<label class="opt" id="q${i}a${aIndex}">
         <input type="radio" name="q${i}" value="${answer.correct ? "1" : "0"}"> ${answer.text}
       </label>`;
     });
-    html += `</div>`;
+    html += `<div class="qactions"><button class="btn" type="button" onclick="checkQuestion(${i})">Rätta fråga ${i+1}</button><div class="qresult" id="qresult${i}">Inte rättad ännu</div></div></div>`;
   });
 
   readingQuestions.innerHTML = html;
@@ -782,10 +799,32 @@ function updateReadingProgress(){
   readingProgressText.textContent = percent + "% svarat";
 }
 
+function updateReadingCompletion(){
+  if(!currentData) return;
+  const total = currentData.questions.length;
+  let allAnswered = true;
+  let correct = 0;
+  for(let i=0;i<total;i++) {
+    const checked = document.querySelector(`input[name="q${i}"]:checked`);
+    if(!checked) allAnswered = false;
+    if(checked && checked.value === "1") correct++;
+  }
+  const done = total > 0 && allAnswered && correct === total;
+  const prev = getStoryProgress(currentIndex);
+  setStoryProgress(currentIndex, { started:true, completed:done, bestScore:Math.max(prev.bestScore || 0, correct), total });
+  readingResult.className = "result " + (done ? "ok" : correct > 0 ? "warn" : "");
+  readingResult.textContent = done ? `Klart! ${correct} / ${total}` : `Resultat just nu: ${correct} / ${total}`;
+  if(done && !prev.completed){
+    celebrateReadingComplete();
+  }
+  renderStoryList();
+}
+
 document.addEventListener("change", e => {
   if(e.target && e.target.name && e.target.name.startsWith("q")) {
     setStoryProgress(currentIndex, { started:true, total:currentData?.questions?.length || 0 });
     updateReadingProgress();
+    updateReadingCompletion();
     renderStoryList();
   }
 });
@@ -797,29 +836,40 @@ function celebrateReadingComplete(){
   main.classList.add('complete-burst');
 }
 
+function checkQuestion(index){
+  if(!currentData) return;
+  const card = document.getElementById(`qcard${index}`);
+  const result = document.getElementById(`qresult${index}`);
+  if(!card || !result) return;
+  card.querySelectorAll('label.opt').forEach(el => el.classList.remove('correct','wrong'));
+  const options = card.querySelectorAll(`input[name="q${index}"]`);
+  const checked = card.querySelector(`input[name="q${index}"]:checked`);
+  if(!checked){
+    result.className = 'qresult warn';
+    result.textContent = 'Välj ett svar först';
+    playFail();
+    return;
+  }
+  options.forEach(input => {
+    const label = input.closest('label.opt');
+    if(input.value === '1') label.classList.add('correct');
+    if(input.checked && input.value !== '1') label.classList.add('wrong');
+  });
+  if(checked.value === '1'){
+    result.className = 'qresult ok';
+    result.textContent = 'Rätt';
+    playSuccess();
+  } else {
+    result.className = 'qresult warn';
+    result.textContent = 'Fel';
+    playFail();
+  }
+  updateReadingCompletion();
+}
+
 function checkAnswers(){
   if(!currentData) return;
-  const total = currentData.questions.length;
-  let correct = 0;
-  document.querySelectorAll("label.opt").forEach(el => el.classList.remove("correct","wrong"));
-
-  for(let i=0;i<total;i++) {
-    const options = document.querySelectorAll(`input[name="q${i}"]`);
-    options.forEach(input => {
-      const label = input.closest("label.opt");
-      if(input.value === "1") label.classList.add("correct");
-      if(input.checked && input.value !== "1") label.classList.add("wrong");
-    });
-    const checked = document.querySelector(`input[name="q${i}"]:checked`);
-    if(checked && checked.value === "1") correct++;
-  }
-
-  const done = correct === total && total > 0;
-  setStoryProgress(currentIndex, { started:true, completed:done, bestScore:Math.max(getStoryProgress(currentIndex).bestScore || 0, correct), total });
-  readingResult.className = "result " + (done ? "ok" : "warn");
-  readingResult.textContent = done ? `Klart! ${correct} / ${total}` : `Resultat: ${correct} / ${total}`;
-  if(done) celebrateReadingComplete();
-  renderStoryList();
+  currentData.questions.forEach((_, i) => checkQuestion(i));
 }
 
 function selectText(index){
@@ -847,3 +897,4 @@ loadCurrentText();
 </script>
 </body>
 </html>
+
